@@ -10,7 +10,7 @@ class Layer:
         STOPPED = 4
 
     class DEFAULT:
-        QUEUE_MAX_SIZE = ...
+        QUEUE_MAX_SIZE = 0
 
     needs_next_layer: bool = False
     next_layer_type: typing.Type['Layer'] or None = None
