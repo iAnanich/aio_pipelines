@@ -1,13 +1,13 @@
 import abc
-import typing
 import asyncio
+import typing
 
-from .node import Node
 from .event import OwnedEvent
+from .node import Node
 from .state import STATES, State, WrongState
 
 __all__ = (
-    'Layer', 'SoloLayer', 'HeadLayer', 'MiddleLayer', 'TailLayer',
+    'BaseLayer', 'Layer', 'SoloLayer', 'HeadLayer', 'MiddleLayer', 'TailLayer',
 )
 
 
@@ -223,11 +223,9 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
     def __repr__(self) -> str:
         return f'<Layer [{self.state}]>'
 
-    @abc.abstractmethod
     async def before_start(self):
         pass
 
-    @abc.abstractmethod
     async def before_stop(self):
         pass
 
@@ -242,12 +240,12 @@ class Layer(BaseLayer, metaclass=abc.ABCMeta):
         self._concurrency = int(concurrency)
         self._queue_max_size = int(queue_max_size)
 
-        self._node_class = type('ThatNode', (Node, ), {'run': self._run})
+        self._node_class = type('ThatNode', (Node,), {'run': self._run})
 
         super().__init__(
             queue=asyncio.Queue(maxsize=self.queue_max_size),
             nodes=[
-                self._node_class(name=f'node-{i+1}')
+                self._node_class(name=f'n{i + 1}')
                 for i in range(self.concurrency)
             ]
         )
@@ -259,12 +257,6 @@ class Layer(BaseLayer, metaclass=abc.ABCMeta):
     @property
     def queue_max_size(self) -> int:
         return self._queue_max_size
-
-    async def before_start(self):
-        pass
-
-    async def before_stop(self):
-        pass
 
     @abc.abstractmethod
     async def run(self, node):

@@ -3,6 +3,10 @@ import asyncio
 
 from .event import OwnedEvent
 
+__all__ = (
+    'Node',
+)
+
 
 class Node(metaclass=abc.ABCMeta):
 
@@ -29,10 +33,7 @@ class Node(metaclass=abc.ABCMeta):
 
     @property
     def state(self):
-        try:
-            return self.task._state if self.task else 'IDLE'
-        except Exception as exc:
-            print(exc)
+        return self.task._state if self.task else 'IDLE'
 
     def __repr__(self):
         return f'<Node [{self.state}] event=[{self.event.state_verbose}] "{self.name}">'
