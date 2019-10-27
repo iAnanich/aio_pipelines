@@ -31,7 +31,6 @@ class Pipeline:
     async def stop(self):
         for layer in self.layers:
             await layer.stop()
-            layer.cancel()
         self.start_layers_future.cancel()
 
     async def stop_at_event(self, event: asyncio.Event):
