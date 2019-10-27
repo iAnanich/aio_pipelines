@@ -7,33 +7,30 @@ from .event import OwnedEvent
 from .state import STATES, State, WrongState
 
 __all__ = (
-    'Layer', 'HeadLayer', 'MiddleLayer', 'TailLayer',
+    'Layer', 'SoloLayer', 'HeadLayer', 'MiddleLayer', 'TailLayer',
 )
 
 
 class AbstractLayer(metaclass=abc.ABCMeta):
     class DEFAULT:
-        QUEUE_MAX_SIZE: int
-        CONCURRENCY: int
-        SINGLE_NODE_STOP: bool
+        QUEUE: asyncio.Queue
 
     needs_next_layer: bool
 
-    def __init__(self, queue_max_size: int,
-                 concurrency: int,
-                 single_node_stop: bool):
+    def __init__(self, nodes: typing.Collection[Node], queue: asyncio.Queue):
         """
-        :param queue_max_size: max size of the asyncio.Queue which is going to
-        be the main source of items for this Layer.
-        :param concurrency: number of concurrent Nodes.
-        :param single_node_stop: if True, layer will start stopping itself after
-        single node completed its work.
+        :param queue: asyncio.Queue used for retrieving items.
+        :param nodes: node.Node meant to be run concurrently.
         """
-        self.queue_max_size = queue_max_size
-        self.concurrency = concurrency
-        self.single_node_stop = single_node_stop
+        self.queue = queue
+        self.nodes = tuple(nodes)
 
-        self.queue: asyncio.Queue = asyncio.Queue(maxsize=queue_max_size)
+        self.started_event = OwnedEvent(owner=self, name='layer started')
+        self.going_to_stop_event = OwnedEvent(owner=self, name='layer going to stop')
+        self.stopped_event = OwnedEvent(owner=self, name='layer stopped')
+        self.aborting_event = OwnedEvent(owner=self, name='layer aborted')
+        self.state: State = STATES.IDLE
+        self.next_layer = None
 
     @abc.abstractmethod
     def connect_next_layer(self, next_layer: 'BaseLayer') -> None:
@@ -64,7 +61,8 @@ class AbstractLayer(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    async def stop_at_event(self, event: asyncio.Event, join_queue: bool = True) -> None:
+    async def stop_at_event(self, event: asyncio.Event,
+                            join_queue: bool = True) -> None:
         """
         Awaits on event to be set, than stops layer.
         :param event: asyncio.Event that will trigger that stop.
@@ -107,15 +105,6 @@ class AbstractLayer(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    async def run(self):
-        """
-        Main logic here: process items using take_item, forward_item, done_item.
-        This coroutine is going to be executed concurrently.
-        :return: None
-        """
-        pass
-
-    @abc.abstractmethod
     async def before_start(self):
         """
         Executes before starting concurrent nodes.
@@ -134,17 +123,12 @@ class AbstractLayer(metaclass=abc.ABCMeta):
 
 class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
     class DEFAULT:
-        QUEUE_MAX_SIZE = 0
-        CONCURRENCY = 1
-        SINGLE_NODE_STOP = False
-
-    STATES = STATES
+        QUEUE = asyncio.Queue(maxsize=0)
 
     needs_next_layer: bool = None
 
-    def __init__(self, queue_max_size: int = DEFAULT.QUEUE_MAX_SIZE,
-                 concurrency: int = DEFAULT.CONCURRENCY,
-                 single_node_stop: bool = DEFAULT.SINGLE_NODE_STOP):
+    def __init__(self, nodes: typing.Collection[Node],
+                 queue: asyncio.Queue = DEFAULT.QUEUE):
         """
 
         :param queue_max_size: max size of the asyncio.Queue which is going to
@@ -154,36 +138,25 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
         single node completed its work.
         """
         super().__init__(
-            queue_max_size=int(queue_max_size),
-            concurrency=int(concurrency),
-            single_node_stop=bool(single_node_stop),
+            nodes=nodes,
+            queue=queue,
         )
 
-        self.state: State = self.STATES.IDLE
-        self.started_event = OwnedEvent(owner=self, name='layer started')
-        self.going_to_stop_event = OwnedEvent(owner=self, name='layer going to stop')
-        self.stopped_event = OwnedEvent(owner=self, name='layer stopped')
-        self.aborting_event = OwnedEvent(owner=self, name='layer aborted')
-
-        self.running_task: asyncio.Task = None
-        self.finalizer_task: asyncio.Task = None
-        self.finalizer_lock = asyncio.Lock()
-
-        self.concurrent_nodes: typing.Tuple[Node, ...] = None
-
-        self.next_layer = None
+        self._running_task: asyncio.Task = None
+        self._finalizer_task: asyncio.Task = None
+        self._finalizer_lock = asyncio.Lock()
 
     def connect_next_layer(self, next_layer: 'Layer') -> None:
         self.next_layer = next_layer
 
     async def start(self) -> None:
-        if self.state != self.STATES.IDLE:
+        if self.state != STATES.IDLE:
             raise WrongState
 
         if self.needs_next_layer and not self.next_layer:
             raise RuntimeError
 
-        self.state = self.STATES.RUNNING
+        self.state = STATES.RUNNING
         self.started_event.set()
 
         await self.before_start()
@@ -191,36 +164,29 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
         await self.stop(join_queue=False)
 
     async def stop(self, join_queue: bool = True) -> None:
-        async with self.finalizer_lock:
-            if self.state == self.STATES.STOPPED:
+        async with self._finalizer_lock:
+            if self.state == STATES.STOPPED:
                 return
 
-            self.state = self.STATES.GOING_TO_STOP
+            self.state = STATES.GOING_TO_STOP
             self.going_to_stop_event.set()
 
             if join_queue:
                 await self.queue.join()
             await self.before_stop()
-            self.finalizer_task = asyncio.create_task(self._finish_runner_task())
-            await self.finalizer_task
+            self._finalizer_task = asyncio.create_task(self._finish_runner_task())
+            await self._finalizer_task
 
-            self.state = self.STATES.STOPPED
+            self.state = STATES.STOPPED
             self.stopped_event.set()
 
-    async def _run_with_stop_hook(self) -> None:
-        self.node = Node(self.run())
-        if self.single_node_stop:
-            asyncio.create_task(self.stop_at_event(self.node.event))
-        await self.node.start()
-
     async def _start_runner_task(self) -> None:
-        self.concurrent_nodes = tuple(
-            Node(self.run()) for _ in range(self.concurrency)
-        )
-
         async def gather_nodes():
             await asyncio.gather(
-                *(node.start() for node in self.concurrent_nodes),
+                *(
+                    node.start(layer=self)
+                    for node in self.nodes
+                ),
                 return_exceptions=True,
             )
 
@@ -228,16 +194,17 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
             event=self.aborting_event,
             join_queue=False,
         ))
-        self.running_task = asyncio.create_task(gather_nodes())
-        await self.running_task
+        self._running_task = asyncio.create_task(gather_nodes())
+        await self._running_task
 
     async def _finish_runner_task(self) -> None:
-        for node in self.concurrent_nodes:
+        for node in self.nodes:
             await node.stop()
 
-        await self.running_task
+        await self._running_task
 
-    async def stop_at_event(self, event: asyncio.Event, join_queue: bool = True) -> None:
+    async def stop_at_event(self, event: asyncio.Event,
+                            join_queue: bool = True) -> None:
         await event.wait()
         await self.stop(join_queue=join_queue)
 
@@ -257,10 +224,6 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
         return f'<Layer [{self.state}]>'
 
     @abc.abstractmethod
-    async def run(self):
-        pass
-
-    @abc.abstractmethod
     async def before_start(self):
         pass
 
@@ -270,12 +233,50 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
 
 
 class Layer(BaseLayer, metaclass=abc.ABCMeta):
+    class DEFAULT(BaseLayer.DEFAULT):
+        CONCURRENCY = 1
+        QUEUE_MAX_SIZE = 0
+
+    def __init__(self, concurrency: int = DEFAULT.CONCURRENCY,
+                 queue_max_size: int = DEFAULT.QUEUE_MAX_SIZE):
+        self._concurrency = int(concurrency)
+        self._queue_max_size = int(queue_max_size)
+
+        self._node_class = type('ThatNode', (Node, ), {'run': self._run})
+
+        super().__init__(
+            queue=asyncio.Queue(maxsize=self.queue_max_size),
+            nodes=[
+                self._node_class(name=f'node-{i+1}')
+                for i in range(self.concurrency)
+            ]
+        )
+
+    @property
+    def concurrency(self) -> int:
+        return self._concurrency
+
+    @property
+    def queue_max_size(self) -> int:
+        return self._queue_max_size
 
     async def before_start(self):
         pass
 
     async def before_stop(self):
         pass
+
+    @abc.abstractmethod
+    async def run(self, node):
+        pass
+
+    @staticmethod
+    async def _run(node, layer):
+        await layer.run(node=node)
+
+
+class SoloLayer(Layer, metaclass=abc.ABCMeta):
+    needs_next_layer = False
 
 
 class HeadLayer(Layer, metaclass=abc.ABCMeta):
