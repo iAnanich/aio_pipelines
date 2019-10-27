@@ -3,19 +3,20 @@ import asyncio
 
 from .node import Node
 from .event import OwnedEvent
+from .state import STATES, State, WrongState
+
+__all__ = (
+    'Layer',
+)
 
 
 class Layer:
-    class STATES:
-        IDLE = 1
-        RUNNING = 2
-        GOING_TO_STOP = 3
-        STOPPED = 4
-
     class DEFAULT:
         QUEUE_MAX_SIZE = 0
         CONCURRENCY = 1
         SINGLE_NODE_STOP = False
+
+    STATES = STATES
 
     needs_next_layer: bool = False
     next_layer_type: typing.Type['Layer'] or None = None
@@ -36,7 +37,7 @@ class Layer:
         self.queue_max_size = int(queue_max_size)
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=queue_max_size)
 
-        self.state = self.STATES.IDLE
+        self.state: State = self.STATES.IDLE
         self.started_event = OwnedEvent(owner=self, name='layer started')
         self.going_to_stop_event = OwnedEvent(owner=self, name='layer going to stop')
         self.stopped_event = OwnedEvent(owner=self, name='layer stopped')
@@ -56,7 +57,7 @@ class Layer:
 
     async def start(self):
         if self.state != self.STATES.IDLE:
-            raise RuntimeError  # TODO: exception
+            raise WrongState
 
         self.state = self.STATES.RUNNING
         self.started_event.set()
@@ -118,6 +119,9 @@ class Layer:
 
     def done_item(self):
         self.queue.task_done()
+
+    def __repr__(self):
+        return f'<Layer [{self.state}]>'
 
     async def _run(self):
         pass
