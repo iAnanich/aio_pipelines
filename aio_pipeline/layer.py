@@ -41,6 +41,7 @@ class Layer:
         self.started_event = OwnedEvent(owner=self, name='layer started')
         self.going_to_stop_event = OwnedEvent(owner=self, name='layer going to stop')
         self.stopped_event = OwnedEvent(owner=self, name='layer stopped')
+        self.aborting_event = OwnedEvent(owner=self, name='layer aborted')
 
         self.running_task: asyncio.Task = None
         self.finalizer_task: asyncio.Task = None
@@ -63,9 +64,9 @@ class Layer:
         self.started_event.set()
 
         await self._start_runner_task()
-        await self.stop()
+        await self.stop(join_queue=False)
 
-    async def stop(self):
+    async def stop(self, join_queue: bool = True):
         async with self.finalizer_lock:
             if self.state == self.STATES.STOPPED:
                 return
@@ -73,7 +74,8 @@ class Layer:
             self.state = self.STATES.GOING_TO_STOP
             self.going_to_stop_event.set()
 
-            await self.queue.join()
+            if join_queue:
+                await self.queue.join()
             await self._before_stop()
             self.finalizer_task = asyncio.create_task(self._finish_runner_task())
             await self.finalizer_task
@@ -98,6 +100,10 @@ class Layer:
                 return_exceptions=True,
             )
 
+        asyncio.create_task(self.stop_at_event(
+            event=self.aborting_event,
+            join_queue=False,
+        ))
         self.running_task = asyncio.create_task(gather_nodes())
         await self.running_task
 
@@ -107,9 +113,9 @@ class Layer:
 
         await self.running_task
 
-    async def stop_at_event(self, event: asyncio.Event):
+    async def stop_at_event(self, event: asyncio.Event, join_queue: bool = True):
         await event.wait()
-        await self.stop()
+        await self.stop(join_queue=join_queue)
 
     async def forward_item(self, obj):
         await self.next_layer.queue.put(obj)
@@ -119,6 +125,9 @@ class Layer:
 
     def done_item(self):
         self.queue.task_done()
+
+    def abort(self):
+        self.aborting_event.set()
 
     def __repr__(self):
         return f'<Layer [{self.state}]>'
