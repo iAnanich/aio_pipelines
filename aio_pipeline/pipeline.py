@@ -1,3 +1,4 @@
+import abc
 import asyncio
 import typing
 
@@ -10,22 +11,62 @@ __all__ = (
 )
 
 
-class Pipeline:
+class AbstractPipeline(metaclass=abc.ABCMeta):
 
     def __init__(self, layers: typing.Sequence[Layer]):
-        self.layers = tuple(layers)
-        self._connect_layers()
+        """
+
+        :param layers: sequence of layers.
+        """
+        self.layers = layers
 
         self.state: State = STATES.IDLE
         self.started_event = OwnedEvent(owner=self, name='pipeline started')
         self.going_to_stop_event = OwnedEvent(owner=self, name='pipeline going to stop')
         self.stopped_event = OwnedEvent(owner=self, name='pipeline stopped')
 
+    @abc.abstractmethod
+    async def start(self) -> None:
+        """
+        Start all layers.
+        :return: None
+        """
+        pass
+
+    @abc.abstractmethod
+    async def stop(self) -> None:
+        """
+        Stop all layers.
+        :return: None
+        """
+        pass
+
+    @abc.abstractmethod
+    async def stop_at_event(self, event: asyncio.Event) -> None:
+        """
+        Await on event and stop itself (call stop method).
+        :param event: asyncio.Event
+        :return: None
+        """
+        pass
+
+
+class Pipeline(AbstractPipeline):
+
+    def __init__(self, layers: typing.Sequence[Layer]):
+        """
+
+        :param layers: sequence of layers.
+        """
+        super().__init__(layers=tuple(layers))
+
+        self._connect_layers()
+
         self._running_layers_task: asyncio.Task = None
         self._finalizer_task: asyncio.Task = None
         self._finalizer_lock = asyncio.Lock()
 
-    async def start(self):
+    async def start(self) -> None:
         if self.state != STATES.IDLE:
             raise WrongState
 
@@ -35,7 +76,7 @@ class Pipeline:
         await self._run_layers()
         await self.stop()
 
-    async def stop(self):
+    async def stop(self) -> None:
         async with self._finalizer_lock:
             if self.state == STATES.STOPPED:
                 return
@@ -49,7 +90,7 @@ class Pipeline:
             self.state = STATES.STOPPED
             self.stopped_event.set()
 
-    async def stop_at_event(self, event: asyncio.Event):
+    async def stop_at_event(self, event: asyncio.Event) -> None:
         await event.wait()
         await self.stop()
 

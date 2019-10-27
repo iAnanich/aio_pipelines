@@ -129,14 +129,6 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
 
     def __init__(self, nodes: typing.Collection[Node],
                  queue: asyncio.Queue = DEFAULT.QUEUE):
-        """
-
-        :param queue_max_size: max size of the asyncio.Queue which is going to
-        be the main source of items for this Layer.
-        :param concurrency: number of concurrent Nodes.
-        :param single_node_stop: if True, layer will start stopping itself after
-        single node completed its work.
-        """
         super().__init__(
             nodes=nodes,
             queue=queue,
@@ -237,6 +229,11 @@ class Layer(BaseLayer, metaclass=abc.ABCMeta):
 
     def __init__(self, concurrency: int = DEFAULT.CONCURRENCY,
                  queue_max_size: int = DEFAULT.QUEUE_MAX_SIZE):
+        """
+        Simplified layer - creates nodes implicitly from run method.
+        :param concurrency: number of concurrent nodes
+        :param queue_max_size: max size of asyncio.Queue
+        """
         self._concurrency = int(concurrency)
         self._queue_max_size = int(queue_max_size)
 
@@ -259,7 +256,12 @@ class Layer(BaseLayer, metaclass=abc.ABCMeta):
         return self._queue_max_size
 
     @abc.abstractmethod
-    async def run(self, node):
+    async def run(self, node) -> None:
+        """
+        Put item processing logic here.
+        :param node: node.Node
+        :return: None
+        """
         pass
 
     @staticmethod
