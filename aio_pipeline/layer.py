@@ -1,102 +1,184 @@
-import typing
+import abc
 import asyncio
+import typing
 
-from .node import Node
 from .event import OwnedEvent
+from .node import Node
 from .state import STATES, State, WrongState
 
 __all__ = (
-    'Layer',
+    'BaseLayer', 'Layer', 'SoloLayer', 'HeadLayer', 'MiddleLayer', 'TailLayer',
 )
 
 
-class Layer:
+class AbstractLayer(metaclass=abc.ABCMeta):
     class DEFAULT:
-        QUEUE_MAX_SIZE = 0
-        CONCURRENCY = 1
-        SINGLE_NODE_STOP = False
+        QUEUE: asyncio.Queue
 
-    STATES = STATES
+    needs_next_layer: bool
 
-    needs_next_layer: bool = False
-    next_layer_type: typing.Type['Layer'] or None = None
-
-    def __init__(self, queue_max_size: int = DEFAULT.QUEUE_MAX_SIZE,
-                 concurrency: int = DEFAULT.CONCURRENCY,
-                 single_node_stop: bool = DEFAULT.SINGLE_NODE_STOP):
+    def __init__(self, nodes: typing.Collection[Node], queue: asyncio.Queue):
         """
-
-        :param queue_max_size: max size of the asyncio.Queue which is going to
-        be the main source of items for this Layer.
-        :param concurrency: number of concurrent Nodes.
-        :param single_node_stop: if True, layer will start stopping itself after
-        single node completed its work.
+        :param queue: asyncio.Queue used for retrieving items.
+        :param nodes: node.Node meant to be run concurrently.
         """
-        self.next_layer = None
+        self.queue = queue
+        self.nodes = tuple(nodes)
 
-        self.queue_max_size = int(queue_max_size)
-        self.queue: asyncio.Queue = asyncio.Queue(maxsize=queue_max_size)
-
-        self.state: State = self.STATES.IDLE
         self.started_event = OwnedEvent(owner=self, name='layer started')
         self.going_to_stop_event = OwnedEvent(owner=self, name='layer going to stop')
         self.stopped_event = OwnedEvent(owner=self, name='layer stopped')
         self.aborting_event = OwnedEvent(owner=self, name='layer aborted')
+        self.state: State = STATES.IDLE
+        self.next_layer = None
 
-        self.running_task: asyncio.Task = None
-        self.finalizer_task: asyncio.Task = None
-        self.finalizer_lock = asyncio.Lock()
+    @abc.abstractmethod
+    def connect_next_layer(self, next_layer: 'BaseLayer') -> None:
+        """
+        Bind's next_layer object to current object in order to use it's queue
+        for forwarding items.
+        :param next_layer: Layer object, which is standing next to the current
+        Layer.
+        :return: None
+        """
+        pass
 
-        self.concurrency = int(concurrency)
-        self.concurrent_nodes: typing.Tuple[Node, ...] = None
-        self.single_node_stop = bool(single_node_stop)
+    @abc.abstractmethod
+    def start(self) -> None:
+        """
+        Begins layer's work.
+        :return: None
+        """
+        pass
 
-    def connect_next_layer(self, next_layer: 'Layer'):
-        if not isinstance(next_layer, self.next_layer_type or Layer):
-            raise TypeError
+    @abc.abstractmethod
+    async def stop(self, join_queue: bool = True) -> None:
+        """
+        Stops layer's work.
+        :param join_queue: if True, will wait for queue to be completed.
+        :return: None
+        """
+        pass
+
+    @abc.abstractmethod
+    async def stop_at_event(self, event: asyncio.Event,
+                            join_queue: bool = True) -> None:
+        """
+        Awaits on event to be set, than stops layer.
+        :param event: asyncio.Event that will trigger that stop.
+        :param join_queue: if True, will wait for queue to be completed.
+        :return: None
+        """
+        pass
+
+    @abc.abstractmethod
+    async def forward_item(self, obj: object) -> None:
+        """
+        Forward item to next layer.
+        :param obj: any object.
+        :return: None
+        """
+        pass
+
+    @abc.abstractmethod
+    async def take_item(self) -> object:
+        """
+        Take item from previous layer.
+        :return: any object
+        """
+        pass
+
+    @abc.abstractmethod
+    def done_item(self) -> None:
+        """
+        Notifies previous layer that taken item was processed.
+        :return: None
+        """
+        pass
+
+    @abc.abstractmethod
+    def abort(self) -> None:
+        """
+        Aborts running layer without awaiting on queue to fully process.
+        :return: None
+        """
+        pass
+
+    @abc.abstractmethod
+    async def before_start(self):
+        """
+        Executes before starting concurrent nodes.
+        :return: None
+        """
+        pass
+
+    @abc.abstractmethod
+    async def before_stop(self):
+        """
+        Executes before stopping concurrent nodes.
+        :return:
+        """
+        pass
+
+
+class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
+    class DEFAULT:
+        QUEUE = asyncio.Queue(maxsize=0)
+
+    needs_next_layer: bool = None
+
+    def __init__(self, nodes: typing.Collection[Node],
+                 queue: asyncio.Queue = DEFAULT.QUEUE):
+        super().__init__(
+            nodes=nodes,
+            queue=queue,
+        )
+
+        self._running_task: asyncio.Task = None
+        self._finalizer_task: asyncio.Task = None
+        self._finalizer_lock = asyncio.Lock()
+
+    def connect_next_layer(self, next_layer: 'Layer') -> None:
         self.next_layer = next_layer
 
-    async def start(self):
-        if self.state != self.STATES.IDLE:
+    async def start(self) -> None:
+        if self.state != STATES.IDLE:
             raise WrongState
 
-        self.state = self.STATES.RUNNING
+        if self.needs_next_layer and not self.next_layer:
+            raise RuntimeError
+
+        self.state = STATES.RUNNING
         self.started_event.set()
 
+        await self.before_start()
         await self._start_runner_task()
         await self.stop(join_queue=False)
 
-    async def stop(self, join_queue: bool = True):
-        async with self.finalizer_lock:
-            if self.state == self.STATES.STOPPED:
+    async def stop(self, join_queue: bool = True) -> None:
+        async with self._finalizer_lock:
+            if self.state == STATES.STOPPED:
                 return
 
-            self.state = self.STATES.GOING_TO_STOP
+            self.state = STATES.GOING_TO_STOP
             self.going_to_stop_event.set()
 
             if join_queue:
                 await self.queue.join()
-            await self._before_stop()
-            self.finalizer_task = asyncio.create_task(self._finish_runner_task())
-            await self.finalizer_task
+            await self.before_stop()
+            self._finalizer_task = asyncio.create_task(self._finish_runner_task())
+            await self._finalizer_task
 
-            self.state = self.STATES.STOPPED
+            self.state = STATES.STOPPED
             self.stopped_event.set()
 
-    async def _run_with_stop_hook(self):
-        self.node = Node(self._run())
-        if self.single_node_stop:
-            asyncio.create_task(self.stop_at_event(self.node.event))
-        await self.node.start()
-
-    async def _start_runner_task(self):
-        self.concurrent_nodes = tuple(
-            Node(self._run()) for _ in range(self.concurrency)
-        )
-
+    async def _start_runner_task(self) -> None:
         async def gather_nodes():
             await asyncio.gather(
-                *(node.start() for node in self.concurrent_nodes),
+                *(
+                    node.start(layer=self)
+                    for node in self.nodes
+                ),
                 return_exceptions=True,
             )
 
@@ -104,36 +186,100 @@ class Layer:
             event=self.aborting_event,
             join_queue=False,
         ))
-        self.running_task = asyncio.create_task(gather_nodes())
-        await self.running_task
+        self._running_task = asyncio.create_task(gather_nodes())
+        await self._running_task
 
-    async def _finish_runner_task(self):
-        for node in self.concurrent_nodes:
+    async def _finish_runner_task(self) -> None:
+        for node in self.nodes:
             await node.stop()
 
-        await self.running_task
+        await self._running_task
 
-    async def stop_at_event(self, event: asyncio.Event, join_queue: bool = True):
+    async def stop_at_event(self, event: asyncio.Event,
+                            join_queue: bool = True) -> None:
         await event.wait()
         await self.stop(join_queue=join_queue)
 
-    async def forward_item(self, obj):
+    async def forward_item(self, obj: object) -> None:
         await self.next_layer.queue.put(obj)
 
-    async def read_item(self):
+    async def take_item(self) -> object:
         return await self.queue.get()
 
-    def done_item(self):
+    def done_item(self) -> None:
         self.queue.task_done()
 
-    def abort(self):
+    def abort(self) -> None:
         self.aborting_event.set()
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f'<Layer [{self.state}]>'
 
-    async def _run(self):
+    async def before_start(self):
         pass
 
-    async def _before_stop(self):
+    async def before_stop(self):
         pass
+
+
+class Layer(BaseLayer, metaclass=abc.ABCMeta):
+    class DEFAULT(BaseLayer.DEFAULT):
+        CONCURRENCY = 1
+        QUEUE_MAX_SIZE = 0
+
+    def __init__(self, concurrency: int = DEFAULT.CONCURRENCY,
+                 queue_max_size: int = DEFAULT.QUEUE_MAX_SIZE):
+        """
+        Simplified layer - creates nodes implicitly from run method.
+        :param concurrency: number of concurrent nodes
+        :param queue_max_size: max size of asyncio.Queue
+        """
+        self._concurrency = int(concurrency)
+        self._queue_max_size = int(queue_max_size)
+
+        self._node_class = type('ThatNode', (Node,), {'run': self._run})
+
+        super().__init__(
+            queue=asyncio.Queue(maxsize=self.queue_max_size),
+            nodes=[
+                self._node_class(name=f'n{i + 1}')
+                for i in range(self.concurrency)
+            ]
+        )
+
+    @property
+    def concurrency(self) -> int:
+        return self._concurrency
+
+    @property
+    def queue_max_size(self) -> int:
+        return self._queue_max_size
+
+    @abc.abstractmethod
+    async def run(self, node) -> None:
+        """
+        Put item processing logic here.
+        :param node: node.Node
+        :return: None
+        """
+        pass
+
+    @staticmethod
+    async def _run(node, layer):
+        await layer.run(node=node)
+
+
+class SoloLayer(Layer, metaclass=abc.ABCMeta):
+    needs_next_layer = False
+
+
+class HeadLayer(Layer, metaclass=abc.ABCMeta):
+    needs_next_layer = True
+
+
+class MiddleLayer(Layer, metaclass=abc.ABCMeta):
+    needs_next_layer = True
+
+
+class TailLayer(Layer, metaclass=abc.ABCMeta):
+    needs_next_layer = False
