@@ -2,54 +2,86 @@ import typing
 import asyncio
 
 from .layer import Layer
+from .state import STATES, State, WrongState
+from .event import OwnedEvent
+
+__all__ = (
+    'Pipeline',
+)
 
 
 class Pipeline:
+    STATES = STATES
 
     def __init__(self, layers: typing.Sequence[Layer]):
         self.layers = tuple(layers)
         self._connect_layers()
 
-        self.start_layers_future = self._create_start_future()
-        self.stop_layers_future = self._create_stop_future()
-        self.stop_self_task: asyncio.Task = None
-        self.running_future: asyncio.Future = None
+        self.state: State = self.STATES.IDLE
+        self.started_event = OwnedEvent(owner=self, name='pipeline started')
+        self.going_to_stop_event = OwnedEvent(owner=self, name='pipeline going to stop')
+        self.stopped_event = OwnedEvent(owner=self, name='pipeline stopped')
+
+        self._running_layers_task: asyncio.Task = None
+        self._finalizer_task: asyncio.Task = None
+        self._finalizer_lock = asyncio.Lock()
 
     async def start(self):
-        self.stop_self_task = asyncio.create_task(
-            self.stop_at_event(self.layers[-1].stopped_event)
-        )
-        self.running_future = asyncio.gather(
-            self.start_layers_future,
-            self.stop_layers_future,
-            self.stop_self_task,
-            return_exceptions=True,
-        )
-        await self.running_future
+        if self.state != self.STATES.IDLE:
+            raise WrongState
+
+        self.state = self.STATES.RUNNING
+        self.started_event.set()
+
+        await self._run_layers()
         await self.stop()
 
     async def stop(self):
-        for layer in self.layers:
-            await layer.stop()
-            layer.cancel()
-        self.start_layers_future.cancel()
+        async with self._finalizer_lock:
+            if self.state == self.STATES.STOPPED:
+                return
+
+            self.state = self.STATES.GOING_TO_STOP
+            self.going_to_stop_event.set()
+
+            self._finalizer_task = asyncio.create_task(self._stop_layers())
+            await self._finalizer_task
+
+            self.state = self.STATES.STOPPED
+            self.stopped_event.set()
 
     async def stop_at_event(self, event: asyncio.Event):
         await event.wait()
         await self.stop()
 
-    def _create_start_future(self) -> asyncio.Future:
-        coros = [layer.start() for layer in self.layers]
-        return asyncio.gather(*coros, return_exceptions=True,)
+    async def _run_layers(self):
+        async def gather_layers():
+            await asyncio.gather(
+                *[
+                    layer.start() for layer in self.layers
+                ],
+                return_exceptions=True,
+            )
 
-    def _create_stop_future(self) -> asyncio.Future:
-        coros = []
+        # schedule tasks for chain-like stop of the layers
         for idx in range(1, len(self.layers)):
             layer = self.layers[idx-1]
             layer_to_stop = self.layers[idx]
             coro = layer_to_stop.stop_at_event(event=layer.stopped_event)
-            coros.append(coro)
-        return asyncio.gather(*coros, return_exceptions=True,)
+            asyncio.create_task(coro)
+
+        # schedule task for stopping Pipeline after last Layer stopped
+        asyncio.create_task(
+            self.stop_at_event(self.layers[-1].stopped_event)
+        )
+
+        self._running_layers_task = asyncio.create_task(gather_layers())
+        await self._running_layers_task
+
+    async def _stop_layers(self):
+        for layer in self.layers:
+            await layer.stop()
+        await self._running_layers_task
 
     def _connect_layers(self):
         for idx in range(1, len(self.layers)):

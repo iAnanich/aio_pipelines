@@ -1,31 +1,55 @@
 import typing
 import asyncio
 
+from .node import Node
+from .event import OwnedEvent
+from .state import STATES, State, WrongState
+
+__all__ = (
+    'Layer',
+)
+
 
 class Layer:
-    class STATES:
-        IDLE = 1
-        RUNNING = 2
-        GOING_TO_STOP = 3
-        STOPPED = 4
-
     class DEFAULT:
         QUEUE_MAX_SIZE = 0
+        CONCURRENCY = 1
+        SINGLE_NODE_STOP = False
+
+    STATES = STATES
 
     needs_next_layer: bool = False
     next_layer_type: typing.Type['Layer'] or None = None
 
-    def __init__(self, queue_max_size: int = DEFAULT.QUEUE_MAX_SIZE):
+    def __init__(self, queue_max_size: int = DEFAULT.QUEUE_MAX_SIZE,
+                 concurrency: int = DEFAULT.CONCURRENCY,
+                 single_node_stop: bool = DEFAULT.SINGLE_NODE_STOP):
+        """
+
+        :param queue_max_size: max size of the asyncio.Queue which is going to
+        be the main source of items for this Layer.
+        :param concurrency: number of concurrent Nodes.
+        :param single_node_stop: if True, layer will start stopping itself after
+        single node completed its work.
+        """
         self.next_layer = None
-        self.queue_max_size = queue_max_size
 
-        self.state = self.STATES.IDLE
+        self.queue_max_size = int(queue_max_size)
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=queue_max_size)
-        self.running_task: asyncio.Task = None
 
-        self.started_event = asyncio.Event()
-        self.stopping_event = asyncio.Event()
-        self.stopped_event = asyncio.Event()
+        self.state: State = self.STATES.IDLE
+        self.started_event = OwnedEvent(owner=self, name='layer started')
+        self.going_to_stop_event = OwnedEvent(owner=self, name='layer going to stop')
+        self.stopped_event = OwnedEvent(owner=self, name='layer stopped')
+        self.aborting_event = OwnedEvent(owner=self, name='layer aborted')
+
+        self.running_task: asyncio.Task = None
+        self.finalizer_task: asyncio.Task = None
+        self.finalizer_lock = asyncio.Lock()
+
+        self.concurrency = int(concurrency)
+        self.concurrent_nodes: typing.Tuple[Node, ...] = None
+        self.single_node_stop = bool(single_node_stop)
 
     def connect_next_layer(self, next_layer: 'Layer'):
         if not isinstance(next_layer, self.next_layer_type or Layer):
@@ -33,34 +57,65 @@ class Layer:
         self.next_layer = next_layer
 
     async def start(self):
+        if self.state != self.STATES.IDLE:
+            raise WrongState
+
         self.state = self.STATES.RUNNING
         self.started_event.set()
 
-        self.running_task = asyncio.create_task(self._run())
+        await self._start_runner_task()
+        await self.stop(join_queue=False)
+
+    async def stop(self, join_queue: bool = True):
+        async with self.finalizer_lock:
+            if self.state == self.STATES.STOPPED:
+                return
+
+            self.state = self.STATES.GOING_TO_STOP
+            self.going_to_stop_event.set()
+
+            if join_queue:
+                await self.queue.join()
+            await self._before_stop()
+            self.finalizer_task = asyncio.create_task(self._finish_runner_task())
+            await self.finalizer_task
+
+            self.state = self.STATES.STOPPED
+            self.stopped_event.set()
+
+    async def _run_with_stop_hook(self):
+        self.node = Node(self._run())
+        if self.single_node_stop:
+            asyncio.create_task(self.stop_at_event(self.node.event))
+        await self.node.start()
+
+    async def _start_runner_task(self):
+        self.concurrent_nodes = tuple(
+            Node(self._run()) for _ in range(self.concurrency)
+        )
+
+        async def gather_nodes():
+            await asyncio.gather(
+                *(node.start() for node in self.concurrent_nodes),
+                return_exceptions=True,
+            )
+
+        asyncio.create_task(self.stop_at_event(
+            event=self.aborting_event,
+            join_queue=False,
+        ))
+        self.running_task = asyncio.create_task(gather_nodes())
         await self.running_task
-        await self.stop()
 
-    async def stop(self):
-        self.state = self.STATES.GOING_TO_STOP
-        self.stopping_event.set()
+    async def _finish_runner_task(self):
+        for node in self.concurrent_nodes:
+            await node.stop()
 
-        await self.queue.join()
-        await self._stop()
+        await self.running_task
 
-        self.running_task.cancel()
-
-        self.state = self.STATES.STOPPED
-        self.stopped_event.set()
-
-    async def _run(self):
-        pass
-
-    async def _stop(self):
-        pass
-
-    async def stop_at_event(self, event: asyncio.Event):
+    async def stop_at_event(self, event: asyncio.Event, join_queue: bool = True):
         await event.wait()
-        await self.stop()
+        await self.stop(join_queue=join_queue)
 
     async def forward_item(self, obj):
         await self.next_layer.queue.put(obj)
@@ -71,5 +126,14 @@ class Layer:
     def done_item(self):
         self.queue.task_done()
 
-    def cancel(self):
-        self.running_task.cancel()
+    def abort(self):
+        self.aborting_event.set()
+
+    def __repr__(self):
+        return f'<Layer [{self.state}]>'
+
+    async def _run(self):
+        pass
+
+    async def _before_stop(self):
+        pass
