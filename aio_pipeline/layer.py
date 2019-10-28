@@ -105,7 +105,7 @@ class AbstractLayer(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    async def before_start(self):
+    async def before_start(self) -> None:
         """
         Executes before starting concurrent nodes.
         :return: None
@@ -113,10 +113,18 @@ class AbstractLayer(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    async def before_stop(self):
+    async def before_stopping(self) -> None:
         """
         Executes before stopping concurrent nodes.
-        :return:
+        :return: None
+        """
+        pass
+
+    @abc.abstractmethod
+    async def after_stopped(self) -> None:
+        """
+        Executes just after last node was stopped.
+        :return:  None
         """
         pass
 
@@ -165,8 +173,9 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
 
             if join_queue:
                 await self.queue.join()
-            await self.before_stop()
+            await self.before_stopping()
             self._finalizer_task = asyncio.create_task(self._finish_runner_task())
+            await self.after_stopped()
             await self._finalizer_task
 
             self.state = STATES.STOPPED
@@ -215,10 +224,13 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
     def __repr__(self) -> str:
         return f'<Layer [{self.state}]>'
 
-    async def before_start(self):
+    async def before_start(self) -> None:
         pass
 
-    async def before_stop(self):
+    async def before_stopping(self) -> None:
+        pass
+
+    async def after_stopped(self) -> None:
         pass
 
 
