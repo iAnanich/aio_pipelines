@@ -4,7 +4,7 @@ import asyncio
 from .event import OwnedEvent
 
 __all__ = (
-    'Node',
+    'AbstractNode', 'BaseNode', 'Node',
 )
 
 
@@ -14,7 +14,7 @@ class AbstractNode(metaclass=abc.ABCMeta):
     async def start(self, layer) -> None:
         """
         Start.
-        :param layer: layer.Layer that controls that Node
+        :param layer: layer.Layer that controls that node
         :return: None
         """
         pass
@@ -37,7 +37,7 @@ class AbstractNode(metaclass=abc.ABCMeta):
         pass
 
 
-class Node(metaclass=abc.ABCMeta):
+class BaseNode(AbstractNode, metaclass=abc.ABCMeta):
 
     def __init__(self, name: str):
         self.name = name
@@ -65,4 +65,12 @@ class Node(metaclass=abc.ABCMeta):
         return self.task._state if self.task else 'IDLE'
 
     def __repr__(self):
-        return f'<Node [{self.state}] event=[{self.event.state_verbose}] "{self.name}">'
+        return f'<{self.__class__.__name__} ' \
+               f'[{self.state}] event=[{self.event.state_verbose}] ' \
+               f'"{self.name}">'
+
+
+class Node(BaseNode):
+
+    async def run(self, layer) -> None:
+        await layer.node_run(node=self)

@@ -253,12 +253,10 @@ class Layer(BaseLayer, metaclass=abc.ABCMeta):
         self._concurrency = int(concurrency)
         self._queue_max_size = int(queue_max_size)
 
-        self._node_class = type('ThatNode', (Node,), {'run': self._run})
-
         super().__init__(
             queue=asyncio.Queue(maxsize=self.queue_max_size),
             nodes=[
-                self._node_class(name=f'n{i + 1}')
+                Node(name=f'n{i + 1}')
                 for i in range(self.concurrency)
             ]
         )
@@ -272,17 +270,13 @@ class Layer(BaseLayer, metaclass=abc.ABCMeta):
         return self._queue_max_size
 
     @abc.abstractmethod
-    async def run(self, node) -> None:
+    async def node_run(self, node) -> None:
         """
         Put item processing logic here.
-        :param node: node.Node
+        :param node: node.BaseNode
         :return: None
         """
         pass
-
-    @staticmethod
-    async def _run(node, layer):
-        await layer.run(node=node)
 
 
 class SoloLayer(Layer, metaclass=abc.ABCMeta):

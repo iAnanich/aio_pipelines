@@ -5,7 +5,7 @@ from aio_pipeline import Pipeline, HeadLayer, MiddleLayer, TailLayer
 
 class ALayer(HeadLayer):
 
-    async def run(self, node):
+    async def node_run(self, node):
         print('a')
         await asyncio.sleep(0.1)
 
@@ -18,7 +18,7 @@ class ALayer(HeadLayer):
 
 class BLayer(MiddleLayer):
 
-    async def run(self, node):
+    async def node_run(self, node):
         print(f'b {node.name}')
         await asyncio.sleep(0.1)
 
@@ -37,7 +37,7 @@ class BLayer(MiddleLayer):
 
 class CLayer(TailLayer):
 
-    async def run(self, node):
+    async def node_run(self, node):
         print(f'c')
         await asyncio.sleep(0.1)
 

@@ -5,7 +5,7 @@ from aio_pipeline import SoloLayer, Pipeline
 
 class ExampleSoloLayer(SoloLayer):
 
-    async def run(self, node):
+    async def node_run(self, node):
         await asyncio.sleep(0.1)
 
         for i in range(8):
