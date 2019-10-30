@@ -174,9 +174,13 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
             if join_queue:
                 await self.queue.join()
             await self.before_stopping()
+
             self._finalizer_task = asyncio.create_task(self._finish_runner_task())
-            await self.after_stopped()
             await self._finalizer_task
+
+            await self.after_stopped()
+            if not self._stop_at_event_task.done() and not self._stop_at_event_task.cancelled():
+                self._stop_at_event_task.cancel()
 
             self.state = STATES.STOPPED
             self.stopped_event.set()
@@ -191,7 +195,7 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
                 return_exceptions=True,
             )
 
-        asyncio.create_task(self.stop_at_event(
+        self._stop_at_event_task = asyncio.create_task(self.stop_at_event(
             event=self.aborting_event,
             join_queue=False,
         ))
