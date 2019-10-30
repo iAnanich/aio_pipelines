@@ -3,17 +3,17 @@ import asyncio
 import typing
 
 from .event import OwnedEvent
-from .layer import Layer
+from .layer import AbstractLayer, BaseLayer
 from .state import STATES, State, WrongState
 
 __all__ = (
-    'Pipeline',
+    'AbstractPipeline', 'BasePipeline', 'Pipeline',
 )
 
 
 class AbstractPipeline(metaclass=abc.ABCMeta):
 
-    def __init__(self, layers: typing.Sequence[Layer]):
+    def __init__(self, layers: typing.Sequence[AbstractLayer]):
         """
 
         :param layers: sequence of layers.
@@ -51,9 +51,9 @@ class AbstractPipeline(metaclass=abc.ABCMeta):
         pass
 
 
-class Pipeline(AbstractPipeline):
+class BasePipeline(AbstractPipeline):
 
-    def __init__(self, layers: typing.Sequence[Layer]):
+    def __init__(self, layers: typing.Sequence[BaseLayer]):
         """
 
         :param layers: sequence of layers.
@@ -128,3 +128,10 @@ class Pipeline(AbstractPipeline):
             prev_layer = self.layers[idx - 1]
             next_layer = self.layers[idx]
             prev_layer.connect_next_layer(next_layer)
+
+    def __repr__(self) -> str:
+        return f'<{self.__class__.__name__} [{self.state}]>'
+
+
+class Pipeline(BasePipeline):
+    pass

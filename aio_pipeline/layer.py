@@ -3,11 +3,12 @@ import asyncio
 import typing
 
 from .event import OwnedEvent
-from .node import Node
+from .node import AbstractNode, BaseNode, Node
 from .state import STATES, State, WrongState
 
 __all__ = (
-    'BaseLayer', 'Layer', 'SoloLayer', 'HeadLayer', 'MiddleLayer', 'TailLayer',
+    'BaseLayer', 'Layer',
+    'SoloLayer', 'HeadLayer', 'MiddleLayer', 'TailLayer',
 )
 
 
@@ -17,10 +18,10 @@ class AbstractLayer(metaclass=abc.ABCMeta):
 
     needs_next_layer: bool
 
-    def __init__(self, nodes: typing.Collection[Node], queue: asyncio.Queue):
+    def __init__(self, nodes: typing.Collection[AbstractNode], queue: asyncio.Queue):
         """
         :param queue: asyncio.Queue used for retrieving items.
-        :param nodes: node.Node meant to be run concurrently.
+        :param nodes: nodes meant to be run concurrently.
         """
         self.queue = queue
         self.nodes = tuple(nodes)
@@ -33,7 +34,7 @@ class AbstractLayer(metaclass=abc.ABCMeta):
         self.next_layer = None
 
     @abc.abstractmethod
-    def connect_next_layer(self, next_layer: 'BaseLayer') -> None:
+    def connect_next_layer(self, next_layer: 'AbstractLayer') -> None:
         """
         Bind's next_layer object to current object in order to use it's queue
         for forwarding items.
@@ -135,7 +136,7 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
 
     needs_next_layer: bool = None
 
-    def __init__(self, nodes: typing.Collection[Node],
+    def __init__(self, nodes: typing.Collection[BaseNode],
                  queue: asyncio.Queue = DEFAULT.QUEUE):
         super().__init__(
             nodes=nodes,
@@ -226,7 +227,7 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
         self.aborting_event.set()
 
     def __repr__(self) -> str:
-        return f'<Layer [{self.state}]>'
+        return f'<{self.__class__.__name__} [{self.state}]>'
 
     async def before_start(self) -> None:
         pass
