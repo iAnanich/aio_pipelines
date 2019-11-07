@@ -217,6 +217,10 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
     async def forward_item(self, obj: object) -> None:
         await self.next_layer.queue.put(obj)
 
+    async def forward_items(self, objs: [object, ...]) -> None:
+        for obj in objs:
+            await self.forward_item(obj)
+
     async def take_item(self) -> object:
         return await self.queue.get()
 
