@@ -54,6 +54,10 @@ class BaseNode(AbstractNode, metaclass=abc.ABCMeta):
         self.event.set()
 
     async def stop(self) -> None:
+        if self.task is None:
+            raise RuntimeError('No task created yet.')
+        if self.task.cancelled():
+            return
         self.task.cancel()
 
     @abc.abstractmethod
