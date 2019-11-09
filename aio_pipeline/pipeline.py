@@ -142,6 +142,10 @@ class BasePipeline(AbstractPipeline):
             prev_layer = self.layers[idx - 1]
             next_layer = self.layers[idx]
             prev_layer.connect_next_layer(next_layer)
+        for layer in self.layers:
+            layer.bind_pipeline(
+                pipeline=self,
+            )
 
     def __repr__(self) -> str:
         return f'<{self.__class__.__name__} [{self.state}]>'

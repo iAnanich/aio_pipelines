@@ -80,6 +80,15 @@ class AbstractLayer(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
+    def bind_pipeline(self, pipeline) -> None:
+        """
+        Bind's pipeline object to current layer.
+        :param pipeline: pipeline.BasePipeline running this layer.
+        :return: None
+        """
+        pass
+
+    @abc.abstractmethod
     def start(self) -> None:
         """
         Begins layer's work.
