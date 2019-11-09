@@ -134,6 +134,9 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
     class DEFAULT:
         QUEUE = asyncio.Queue(maxsize=0)
 
+    class STATES(STATES):
+        pass
+
     needs_next_layer: bool = None
 
     def __init__(self, nodes: typing.Collection[BaseNode],
