@@ -6,6 +6,7 @@ import logging
 from .event import OwnedEvent
 from .node import AbstractNode, BaseNode, Node
 from .state import STATES, State, WrongState
+from .utils import try_cancel
 
 __all__ = (
     'BaseLayer', 'Layer',
@@ -244,10 +245,8 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
             await self._finalizer_task
 
             await self.after_stopped()
-            if not self._abort_at_event_task.done() and not self._abort_at_event_task.cancelled():
-                self._abort_at_event_task.cancel()
-            if not self._graceful_stop_at_event_task.done() and not self._graceful_stop_at_event_task.cancelled():
-                self._graceful_stop_at_event_task.cancel()
+            for task in (self._wait_abort_task, self._wait_graceful_stop_task):
+                try_cancel(task)
 
             self._state = STATES.STOPPED
             self._stopped_event.set()
@@ -266,11 +265,11 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
                 return_exceptions=True,
             )
 
-        self._abort_at_event_task = asyncio.create_task(self.stop_at_event(
+        self._wait_abort_task = asyncio.create_task(self.stop_at_event(
             event=self._aborting_event,
             join_queue=False,
         ))
-        self._graceful_stop_at_event_task = asyncio.create_task(self.stop_at_event(
+        self._wait_graceful_stop_task = asyncio.create_task(self.stop_at_event(
             event=self._gracefully_stopping_event,
             join_queue=True,
         ))
