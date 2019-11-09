@@ -19,28 +19,61 @@ class AbstractLayer(metaclass=abc.ABCMeta):
 
     needs_next_layer: bool
 
-    def __init__(self, nodes: typing.Collection[AbstractNode], queue: asyncio.Queue):
+    def __init__(self, nodes: typing.Collection[AbstractNode],
+                 queue: asyncio.Queue):
         """
         :param queue: asyncio.Queue used for retrieving items.
         :param nodes: nodes meant to be run concurrently.
         """
-        self.queue = queue
-        self.nodes = tuple(nodes)
+        self._queue = queue
+        self._nodes = tuple(nodes)
 
-        self.started_event = OwnedEvent(owner=self, name='layer started')
-        self.going_to_stop_event = OwnedEvent(owner=self, name='layer going to stop')
-        self.stopped_event = OwnedEvent(owner=self, name='layer stopped')
-        self.aborting_event = OwnedEvent(owner=self, name='layer aborting')
-        self.gracefully_stopping_event = OwnedEvent(owner=self, name='layer gracefully stopping')
-        self.state: State = STATES.IDLE
-        self.next_layer = None
+        self._state: State = STATES.IDLE
+        self._next_layer: BaseLayer = None
+        self._pipeline = None
+
+        # events
+        self._started_event = OwnedEvent(owner=self, name='layer started')
+        self._going_to_stop_event = OwnedEvent(owner=self, name='layer going to stop')
+        self._stopped_event = OwnedEvent(owner=self, name='layer stopped')
+        self._aborting_event = OwnedEvent(owner=self, name='layer aborting')
+        self._gracefully_stopping_event = OwnedEvent(owner=self, name='layer gracefully stopping')
+        self._finalizer_lock = asyncio.Lock()
+
+        # tasks
+        self._running_task: asyncio.Task = None
+        self._finalizer_task: asyncio.Task = None
+
+    @property
+    def queue(self) -> asyncio.Queue:
+        return self._queue
+
+    @property
+    def nodes(self) -> typing.Tuple[AbstractNode, ...]:
+        return self._nodes
+
+    @property
+    def pipeline(self):
+        return self._pipeline
+
+    @property
+    def state(self) -> State:
+        return self._state
+
+    @property
+    def next_layer(self) -> 'BaseLayer':
+        return self._next_layer
+
+    @property
+    def layer_stopped_event(self) -> asyncio.Event:
+        return self._stopped_event
 
     @abc.abstractmethod
     def connect_next_layer(self, next_layer: 'AbstractLayer') -> None:
         """
         Bind's next_layer object to current object in order to use it's queue
         for forwarding items.
-        :param next_layer: Layer object, which is standing next to the current
+        :param next_layer: BaseLayer object, which is standing next to the current
         Layer.
         :return: None
         """
@@ -155,17 +188,21 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
             queue=queue,
         )
 
-        self._running_task: asyncio.Task = None
-        self._finalizer_task: asyncio.Task = None
-        self._finalizer_lock = asyncio.Lock()
-
         self.log = self.logger = logger or logging.getLogger(self.__class__.__name__)
 
-    def connect_next_layer(self, next_layer: 'Layer') -> None:
-        self.next_layer = next_layer
+    def connect_next_layer(self, next_layer: 'BaseLayer') -> None:
+        if not isinstance(next_layer, BaseLayer):
+            raise TypeError
+        self._next_layer = next_layer
+
+    def bind_pipeline(self, pipeline) -> None:
+        from .pipeline import BasePipeline
+        if not isinstance(pipeline, BasePipeline):
+            raise TypeError
+        self._pipeline = pipeline
 
     async def start(self) -> None:
-        if self.state != STATES.IDLE:
+        if self._state != STATES.IDLE:
             raise WrongState
 
         if self.needs_next_layer and not self.next_layer:
@@ -173,8 +210,8 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
 
         self.log.debug(f'Starting...')
 
-        self.state = STATES.RUNNING
-        self.started_event.set()
+        self._state = STATES.RUNNING
+        self._started_event.set()
 
         await self.before_start()
         await self._start_runner_task()
@@ -187,11 +224,11 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
 
             self.log.debug(f'Going to stop with join_queue={join_queue}')
 
-            self.state = STATES.GOING_TO_STOP
-            self.going_to_stop_event.set()
+            self._state = STATES.GOING_TO_STOP
+            self._going_to_stop_event.set()
 
             if join_queue:
-                await self.queue.join()
+                await self._queue.join()
             await self.before_stopping()
 
             self._finalizer_task = asyncio.create_task(self._finish_runner_task())
@@ -203,8 +240,8 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
             if not self._graceful_stop_at_event_task.done() and not self._graceful_stop_at_event_task.cancelled():
                 self._graceful_stop_at_event_task.cancel()
 
-            self.state = STATES.STOPPED
-            self.stopped_event.set()
+            self._state = STATES.STOPPED
+            self._stopped_event.set()
 
             self.log.info(f'Stopped.')
 
@@ -215,17 +252,17 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
             await asyncio.gather(
                 *(
                     node.start(layer=self)
-                    for node in self.nodes
+                    for node in self._nodes
                 ),
                 return_exceptions=True,
             )
 
         self._abort_at_event_task = asyncio.create_task(self.stop_at_event(
-            event=self.aborting_event,
+            event=self._aborting_event,
             join_queue=False,
         ))
         self._graceful_stop_at_event_task = asyncio.create_task(self.stop_at_event(
-            event=self.gracefully_stopping_event,
+            event=self._gracefully_stopping_event,
             join_queue=True,
         ))
         self._running_task = asyncio.create_task(gather_nodes())
@@ -234,7 +271,7 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
         await self._running_task
 
     async def _finish_runner_task(self) -> None:
-        for node in self.nodes:
+        for node in self._nodes:
             await node.stop()
 
         await self._running_task
@@ -245,23 +282,23 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
         await self.stop(join_queue=join_queue)
 
     async def forward_item(self, obj: object) -> None:
-        await self.next_layer.queue.put(obj)
+        await self.next_layer._queue.put(obj)
 
     async def forward_items(self, objs: [object, ...]) -> None:
         for obj in objs:
             await self.forward_item(obj)
 
     async def take_item(self) -> object:
-        return await self.queue.get()
+        return await self._queue.get()
 
     def done_item(self) -> None:
-        self.queue.task_done()
+        self._queue.task_done()
 
     def abort(self) -> None:
-        self.aborting_event.set()
+        self._aborting_event.set()
 
     def stop_gracefully(self) -> None:
-        self.gracefully_stopping_event.set()
+        self._gracefully_stopping_event.set()
 
     def __repr__(self) -> str:
         return f'<{self.__class__.__name__} [{self.state}]>'

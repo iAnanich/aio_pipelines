@@ -119,12 +119,12 @@ class BasePipeline(AbstractPipeline):
         for idx in range(1, len(self.layers)):
             layer = self.layers[idx - 1]
             layer_to_stop = self.layers[idx]
-            coro = layer_to_stop.stop_at_event(event=layer.stopped_event)
+            coro = layer_to_stop.stop_at_event(event=layer.layer_stopped_event)
             asyncio.create_task(coro)
 
         # schedule task for stopping Pipeline after last Layer stopped
         asyncio.create_task(
-            self.stop_at_event(self.layers[-1].stopped_event)
+            self.stop_at_event(self.layers[-1].layer_stopped_event)
         )
 
         self._running_layers_task = asyncio.create_task(gather_layers())
