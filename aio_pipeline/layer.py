@@ -1,6 +1,7 @@
 import abc
 import asyncio
 import typing
+import logging
 
 from .event import OwnedEvent
 from .node import AbstractNode, BaseNode, Node
@@ -10,6 +11,8 @@ __all__ = (
     'BaseLayer', 'Layer',
     'SoloLayer', 'HeadLayer', 'MiddleLayer', 'TailLayer',
 )
+
+log = logging.getLogger(__name__)
 
 
 class AbstractLayer(metaclass=abc.ABCMeta):
@@ -189,6 +192,8 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
             self.state = STATES.STOPPED
             self.stopped_event.set()
 
+    # TODO: implement stop_gracefully
+
     async def _start_runner_task(self) -> None:
         async def gather_nodes():
             await asyncio.gather(
@@ -248,26 +253,36 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
 
 class Layer(BaseLayer, metaclass=abc.ABCMeta):
     class DEFAULT(BaseLayer.DEFAULT):
+        NODES_AUTO_RERUN = False
         CONCURRENCY = 1
         QUEUE_MAX_SIZE = 0
 
-    def __init__(self, concurrency: int = DEFAULT.CONCURRENCY,
+    def __init__(self, nodes_auto_rerun: bool = DEFAULT.NODES_AUTO_RERUN,
+                 concurrency: int = DEFAULT.CONCURRENCY,
                  queue_max_size: int = DEFAULT.QUEUE_MAX_SIZE):
         """
         Simplified layer - creates nodes implicitly from run method.
         :param concurrency: number of concurrent nodes
         :param queue_max_size: max size of asyncio.Queue
         """
+        self._nodes_auto_rerun = bool(nodes_auto_rerun)
         self._concurrency = int(concurrency)
         self._queue_max_size = int(queue_max_size)
 
         super().__init__(
             queue=asyncio.Queue(maxsize=self.queue_max_size),
             nodes=[
-                Node(name=f'n{i + 1}')
+                Node(
+                    do_auto_rerun=self.nodes_auto_rerun,
+                    name=f'n{i + 1}',
+                )
                 for i in range(self.concurrency)
             ]
         )
+
+    @property
+    def nodes_auto_rerun(self) -> bool:
+        return self._nodes_auto_rerun
 
     @property
     def concurrency(self) -> int:
@@ -278,10 +293,10 @@ class Layer(BaseLayer, metaclass=abc.ABCMeta):
         return self._queue_max_size
 
     @abc.abstractmethod
-    async def node_run(self, node) -> None:
+    async def node_run(self, node: Node) -> None:
         """
         Put item processing logic here.
-        :param node: node.BaseNode
+        :param node: node.Node which will all this method
         :return: None
         """
         pass

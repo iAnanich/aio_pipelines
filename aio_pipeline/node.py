@@ -1,11 +1,14 @@
 import abc
 import asyncio
+import logging
 
 from .event import OwnedEvent
 
 __all__ = (
     'AbstractNode', 'BaseNode', 'Node',
 )
+
+log = logging.getLogger(__name__)
 
 
 class AbstractNode(metaclass=abc.ABCMeta):
@@ -76,5 +79,38 @@ class BaseNode(AbstractNode, metaclass=abc.ABCMeta):
 
 class Node(BaseNode):
 
-    async def run(self, layer) -> None:
+    def __init__(self, name: str,
+                 do_auto_rerun: bool = False):
+        super().__init__(
+            name=name,
+        )
+
+        self._do_auto_rerun = bool(do_auto_rerun)
+
+    @property
+    def do_auto_rerun(self):
+        return self._do_auto_rerun
+
+    async def _run_from_layer(self, layer):
+        """
+        Run the method, implement inside layer.
+        :param layer: layer.Layer
+        :return:
+        """
         await layer.node_run(node=self)
+
+    async def run(self, layer) -> None:
+        try:
+            if self.do_auto_rerun:
+                while True:
+                    await self._run_from_layer(layer=layer)
+            else:
+                await self._run_from_layer(layer=layer)
+        except Exception as exc:
+            log.exception(f'Caught unexpected error during node running - {exc}')
+            try:
+                await layer.stop()
+            except Exception as stop_exc:
+                log.exception(f'Could not stop gracefully due to error - {stop_exc}')
+            finally:
+                raise exc
