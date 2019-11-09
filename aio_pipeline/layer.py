@@ -30,7 +30,8 @@ class AbstractLayer(metaclass=abc.ABCMeta):
         self.started_event = OwnedEvent(owner=self, name='layer started')
         self.going_to_stop_event = OwnedEvent(owner=self, name='layer going to stop')
         self.stopped_event = OwnedEvent(owner=self, name='layer stopped')
-        self.aborting_event = OwnedEvent(owner=self, name='layer aborted')
+        self.aborting_event = OwnedEvent(owner=self, name='layer aborting')
+        self.gracefully_stopping_event = OwnedEvent(owner=self, name='layer gracefully stopping')
         self.state: State = STATES.IDLE
         self.next_layer = None
 
@@ -101,10 +102,17 @@ class AbstractLayer(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def abort(self) -> None:
         """
-        Aborts running layer without awaiting on queue to fully process.
+        Sets event dedicated for stop of the layer without awaiting on pending items.
         :return: None
         """
         pass
+
+    @abc.abstractmethod
+    def stop_gracefully(self) -> None:
+        """
+        Sets event dedicated for graceful stop of the layer.
+        :return: None
+        """
 
     @abc.abstractmethod
     async def before_start(self) -> None:
@@ -190,8 +198,10 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
             await self._finalizer_task
 
             await self.after_stopped()
-            if not self._stop_at_event_task.done() and not self._stop_at_event_task.cancelled():
-                self._stop_at_event_task.cancel()
+            if not self._abort_at_event_task.done() and not self._abort_at_event_task.cancelled():
+                self._abort_at_event_task.cancel()
+            if not self._graceful_stop_at_event_task.done() and not self._graceful_stop_at_event_task.cancelled():
+                self._graceful_stop_at_event_task.cancel()
 
             self.state = STATES.STOPPED
             self.stopped_event.set()
@@ -210,9 +220,13 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
                 return_exceptions=True,
             )
 
-        self._stop_at_event_task = asyncio.create_task(self.stop_at_event(
+        self._abort_at_event_task = asyncio.create_task(self.stop_at_event(
             event=self.aborting_event,
             join_queue=False,
+        ))
+        self._graceful_stop_at_event_task = asyncio.create_task(self.stop_at_event(
+            event=self.gracefully_stopping_event,
+            join_queue=True,
         ))
         self._running_task = asyncio.create_task(gather_nodes())
 
@@ -245,6 +259,9 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
 
     def abort(self) -> None:
         self.aborting_event.set()
+
+    def stop_gracefully(self) -> None:
+        self.gracefully_stopping_event.set()
 
     def __repr__(self) -> str:
         return f'<{self.__class__.__name__} [{self.state}]>'
