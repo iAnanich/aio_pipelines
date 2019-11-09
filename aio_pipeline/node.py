@@ -8,8 +8,6 @@ __all__ = (
     'AbstractNode', 'BaseNode', 'Node',
 )
 
-log = logging.getLogger(__name__)
-
 
 class AbstractNode(metaclass=abc.ABCMeta):
 
@@ -42,17 +40,21 @@ class AbstractNode(metaclass=abc.ABCMeta):
 
 class BaseNode(AbstractNode, metaclass=abc.ABCMeta):
 
-    def __init__(self, name: str):
+    def __init__(self, name: str,
+                 logger: logging.Logger = None):
         self.name = name
         self.event = OwnedEvent(owner=self, name='node task completed')
         self.task: asyncio.Task = None
         self.layer = None
+
+        self.log = self.logger = logger or logging.getLogger(self.__class__.__name__)
 
     async def start(self, layer) -> None:
         self.layer = layer
         self.task = asyncio.create_task(
             coro=self.run(layer=layer),
         )
+        self.log.debug(f'Started node "{self.name}" of {self.layer}.')
         await self.task
         self.event.set()
 
@@ -62,6 +64,7 @@ class BaseNode(AbstractNode, metaclass=abc.ABCMeta):
         if self.task.cancelled():
             return
         self.task.cancel()
+        self.log.debug(f'Stopped node "{self.name}" of {self.layer}.')
 
     @abc.abstractmethod
     async def run(self, layer) -> None:
@@ -80,9 +83,11 @@ class BaseNode(AbstractNode, metaclass=abc.ABCMeta):
 class Node(BaseNode):
 
     def __init__(self, name: str,
-                 do_auto_rerun: bool = False):
+                 do_auto_rerun: bool = False,
+                 logger: logging.Logger = None):
         super().__init__(
             name=name,
+            logger=logger or logging.getLogger('aio_pipeline.node.Node'),
         )
 
         self._do_auto_rerun = bool(do_auto_rerun)
@@ -107,10 +112,10 @@ class Node(BaseNode):
             else:
                 await self._run_from_layer(layer=layer)
         except Exception as exc:
-            log.exception(f'Caught unexpected error during node running - {exc}')
+            self.log.exception(f'Caught unexpected error during node running - {exc}')
             try:
                 await layer.stop()
             except Exception as stop_exc:
-                log.exception(f'Could not stop gracefully due to error - {stop_exc}')
+                self.log.exception(f'Could not stop gracefully due to error - {stop_exc}')
             finally:
                 raise exc

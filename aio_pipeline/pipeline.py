@@ -1,6 +1,7 @@
 import abc
 import asyncio
 import typing
+import logging
 
 from .event import OwnedEvent
 from .layer import AbstractLayer, BaseLayer
@@ -53,7 +54,10 @@ class AbstractPipeline(metaclass=abc.ABCMeta):
 
 class BasePipeline(AbstractPipeline):
 
-    def __init__(self, layers: typing.Sequence[BaseLayer]):
+    STATES = STATES
+
+    def __init__(self, layers: typing.Sequence[BaseLayer],
+                 logger: logging.Logger = None):
         """
 
         :param layers: sequence of layers.
@@ -66,9 +70,13 @@ class BasePipeline(AbstractPipeline):
         self._finalizer_task: asyncio.Task = None
         self._finalizer_lock = asyncio.Lock()
 
+        self.log = self.logger = logger or logging.getLogger(self.__class__.__name__)
+
     async def start(self) -> None:
         if self.state != STATES.IDLE:
             raise WrongState
+
+        self.log.debug(f'Starting...')
 
         self.state = STATES.RUNNING
         self.started_event.set()
@@ -81,6 +89,8 @@ class BasePipeline(AbstractPipeline):
             if self.state == STATES.STOPPED:
                 return
 
+            self.log.debug(f'Going to stop...')
+
             self.state = STATES.GOING_TO_STOP
             self.going_to_stop_event.set()
 
@@ -89,6 +99,8 @@ class BasePipeline(AbstractPipeline):
 
             self.state = STATES.STOPPED
             self.stopped_event.set()
+
+            self.log.info(f'Stopped.')
 
     async def stop_at_event(self, event: asyncio.Event) -> None:
         await event.wait()
@@ -116,6 +128,8 @@ class BasePipeline(AbstractPipeline):
         )
 
         self._running_layers_task = asyncio.create_task(gather_layers())
+
+        self.log.info(f'Started.')
         await self._running_layers_task
 
     async def _stop_layers(self):
@@ -134,4 +148,10 @@ class BasePipeline(AbstractPipeline):
 
 
 class Pipeline(BasePipeline):
-    pass
+
+    def __init__(self, layers: typing.Sequence[BaseLayer],
+                 logger: logging.Logger = None):
+        super().__init__(
+            layers=layers,
+            logger=logger or logging.getLogger('aio_pipeline.pipeline.Pipeline'),
+        )

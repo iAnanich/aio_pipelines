@@ -12,8 +12,6 @@ __all__ = (
     'SoloLayer', 'HeadLayer', 'MiddleLayer', 'TailLayer',
 )
 
-log = logging.getLogger(__name__)
-
 
 class AbstractLayer(metaclass=abc.ABCMeta):
     class DEFAULT:
@@ -137,13 +135,13 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
     class DEFAULT:
         QUEUE = asyncio.Queue(maxsize=0)
 
-    class STATES(STATES):
-        pass
+    STATES = STATES
 
     needs_next_layer: bool = None
 
     def __init__(self, nodes: typing.Collection[BaseNode],
-                 queue: asyncio.Queue = DEFAULT.QUEUE):
+                 queue: asyncio.Queue = DEFAULT.QUEUE,
+                 logger: logging.Logger = None):
         super().__init__(
             nodes=nodes,
             queue=queue,
@@ -152,6 +150,8 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
         self._running_task: asyncio.Task = None
         self._finalizer_task: asyncio.Task = None
         self._finalizer_lock = asyncio.Lock()
+
+        self.log = self.logger = logger or logging.getLogger(self.__class__.__name__)
 
     def connect_next_layer(self, next_layer: 'Layer') -> None:
         self.next_layer = next_layer
@@ -162,6 +162,8 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
 
         if self.needs_next_layer and not self.next_layer:
             raise RuntimeError
+
+        self.log.debug(f'Starting...')
 
         self.state = STATES.RUNNING
         self.started_event.set()
@@ -174,6 +176,8 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
         async with self._finalizer_lock:
             if self.state == STATES.STOPPED:
                 return
+
+            self.log.debug(f'Going to stop with join_queue={join_queue}')
 
             self.state = STATES.GOING_TO_STOP
             self.going_to_stop_event.set()
@@ -192,6 +196,8 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
             self.state = STATES.STOPPED
             self.stopped_event.set()
 
+            self.log.info(f'Stopped.')
+
     # TODO: implement stop_gracefully
 
     async def _start_runner_task(self) -> None:
@@ -209,6 +215,8 @@ class BaseLayer(AbstractLayer, metaclass=abc.ABCMeta):
             join_queue=False,
         ))
         self._running_task = asyncio.create_task(gather_nodes())
+
+        self.log.info(f'Started.')
         await self._running_task
 
     async def _finish_runner_task(self) -> None:
@@ -259,7 +267,8 @@ class Layer(BaseLayer, metaclass=abc.ABCMeta):
 
     def __init__(self, nodes_auto_rerun: bool = DEFAULT.NODES_AUTO_RERUN,
                  concurrency: int = DEFAULT.CONCURRENCY,
-                 queue_max_size: int = DEFAULT.QUEUE_MAX_SIZE):
+                 queue_max_size: int = DEFAULT.QUEUE_MAX_SIZE,
+                 logger: logging.Logger = None):
         """
         Simplified layer - creates nodes implicitly from run method.
         :param concurrency: number of concurrent nodes
@@ -277,7 +286,8 @@ class Layer(BaseLayer, metaclass=abc.ABCMeta):
                     name=f'n{i + 1}',
                 )
                 for i in range(self.concurrency)
-            ]
+            ],
+            logger=logger or logging.getLogger('aio_pipeline.layer.Layer'),
         )
 
     @property
